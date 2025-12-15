@@ -6,7 +6,7 @@ import json
 import sympy as sp
 import urllib.parse
 
-TOKEN = "8478534243:AAGeQww_tJpqAkrd-56XG5h0ua1RlfrDubg"
+TOKEN = "BOT TOKEN HERE"
 bot = telebot.TeleBot(TOKEN)
 DATA_FILE = "users.json"
 COMMISSION = 0.15
