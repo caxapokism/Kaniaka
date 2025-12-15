@@ -1,0 +1,411 @@
+import telebot
+from telebot import types
+import time
+import random
+import json
+import sympy as sp
+import urllib.parse
+
+TOKEN = "8478534243:AAGeQww_tJpqAkrd-56XG5h0ua1RlfrDubg"
+bot = telebot.TeleBot(TOKEN)
+DATA_FILE = "users.json"
+COMMISSION = 0.15
+PREFIXES = ("/", ".", "!", "сап")
+ADMIN_IDS = ["1573577653"]
+
+# ---------------- utils ----------------
+def load():
+    try:
+        with open(DATA_FILE,"r",encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save(data):
+    with open(DATA_FILE,"w",encoding="utf-8") as f:
+        json.dump(data,f,ensure_ascii=False,indent=2)
+
+users = load()
+
+def uid(m): return str(m.from_user.id)
+
+def get(u):
+    if u not in users:
+        users[u] = {
+            "coins":0,
+            "farm_cd":0,
+            "daily_streak":0,
+            "last_daily_ts":0,
+            "daily_missed_ts":0,
+            "advent":[],
+            "log":[],
+        }
+    return users[u]
+
+def save_all():
+    save(users)
+
+def is_cmd(text, cmd):
+    return text.lower().startswith(tuple(p + cmd for p in PREFIXES))
+
+def is_admin(m):
+    return str(m.from_user.id) in ADMIN_IDS
+
+# ---------------- фарм ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text,"фарм"))
+def farm(m):
+    u = get(uid(m))
+    now = time.time()
+    if now < u["farm_cd"]:
+        left = int((u["farm_cd"] - now)//60)
+        bot.send_message(m.chat.id,f"⏳ Фарм будет доступен через {left} мин.")
+        return
+    luck = random.randint(1,100)
+    if luck<=5:
+        coins=random.randint(50,100)
+        text=f"🍀 УДАЧА!\n🌑 +{coins} коинов в мешок"
+    else:
+        coins=random.randint(5,50)
+        text=f"🌑 ЗАЧЁТ!\n+{coins} коинов в мешок"
+    u["coins"]+=coins
+    u["farm_cd"]=now+10800
+    save_all()
+    bot.send_message(m.chat.id,text)
+
+# ---------------- мешок ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text,"мешок"))
+def bag(m):
+    u=get(uid(m))
+    bot.send_message(m.chat.id,f"💰 В мешке: {u['coins']} 🌑")
+
+# ---------------- ежедневка ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text,"ежедневка"))
+def daily(m):
+    u=get(uid(m))
+    now=int(time.time())
+    if now - u["last_daily_ts"] < 86400:
+        missed = (now - u["last_daily_ts"]) > 172800
+        if missed:
+            kb=types.InlineKeyboardMarkup()
+            cost=int(u["daily_streak"]*10000*1.05)
+            kb.add(types.InlineKeyboardButton(f"🔥 Восстановить стрик за {cost} 🌑",callback_data=f"restore:{uid(m)}"))
+            bot.send_message(m.chat.id,"❌ Стрик пропущен! Можно восстановить:",reply_markup=kb)
+            return
+        else:
+            bot.send_message(m.chat.id,"❌ Уже получали награду сегодня")
+            return
+    u["daily_streak"]+=1
+    u["last_daily_ts"]=now
+    coins=random.randint(50,120)
+    text=f"🎁 Ежедневная награда\n🔥 Стрик: {u['daily_streak']} 🔥\n+{coins} 🌑"
+    u["coins"]+=coins
+    save_all()
+    bot.send_message(m.chat.id,text)
+
+@bot.callback_query_handler(func=lambda c:c.data.startswith("restore:"))
+def restore_streak_cb(c):
+    _, owner = c.data.split(":")
+    if str(c.from_user.id) != owner:
+        bot.answer_callback_query(c.id,"❌ Эта кнопка не для вас",show_alert=True)
+        return
+    u=get(owner)
+    cost=int(u["daily_streak"]*10000*1.05)
+    if u["coins"]<cost:
+        bot.answer_callback_query(c.id,f"❌ Недостаточно коинов ({cost})",show_alert=True)
+        return
+    u["coins"]-=cost
+    u["daily_streak"]+=1
+    save_all()
+    bot.answer_callback_query(c.id,f"🔥 Стрик восстановлен! Теперь {u['daily_streak']} дней. Потрачено {cost} 🌑",show_alert=True)
+
+# ---------------- кубы ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text,"кубы"))
+def dice(m):
+    args=m.text.split()
+    if len(args)!=3:
+        bot.send_message(m.chat.id,".кубы ставка число(1-6)")
+        return
+    try:
+        bet = int(args[1])
+        num = int(args[2])
+    except:
+        return
+    u = get(uid(m))
+    if u["coins"] < bet or not 1 <= num <= 6: return
+    roll = random.randint(1, 6)
+    if roll == num:
+        win = int(bet * 1.15)
+        u["coins"] += win
+        text = f"🎲 Выпало {roll}\n✅ Победа! +{win}"
+    else:
+        u["coins"] -= bet
+        text = f"🎲 Выпало {roll}\n❌ Проигрыш -{bet}"
+    save_all()
+    bot.send_message(m.chat.id, text)
+
+
+# ---------------- пинг ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "пинг"))
+def ping(m):
+    start = time.time()
+    msg = bot.send_message(m.chat.id, "📡 Проверка...")
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔄 Обновить", callback_data="ping"))
+    latency = int((time.time() - start) * 1000)
+    bot.edit_message_text(f"📡 ПОНГ\n⚡️ {latency} ms", m.chat.id, msg.message_id, reply_markup=kb)
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "ping")
+def ping_cb(c):
+    latency = random.randint(20, 80)
+    bot.edit_message_text(f"📡 ПОНГ\n⚡️ {latency} ms", c.message.chat.id, c.message.message_id,
+                          reply_markup=c.message.reply_markup)
+
+
+# ---------------- до ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "до"))
+def to(m):
+    parts = m.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(m.chat.id, ".до нг | лето | 31.12")
+        return
+    now = time.time()
+    y = time.localtime().tm_year
+    arg = parts[1]
+    if arg in ("нг", "новый год"):
+        t = time.strptime(f"01.01.{y + 1}", "%d.%m.%Y")
+        name = "Нового года"
+    else:
+        try:
+            d, mo = map(int, arg.split("."))
+            t = time.strptime(f"{d:02}.{mo:02}.{y}", "%d.%m.%Y")
+            name = arg
+        except:
+            bot.send_message(m.chat.id, "❌ Неверный формат")
+            return
+    days = int((time.mktime(t) - now) // 86400)
+    bot.send_message(m.chat.id, f"⏳ До {name}\nОсталось дней: {days}")
+
+
+# ---------------- топ ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "топ"))
+def top(m):
+    top_users = sorted(users.items(), key=lambda x: x[1]["coins"], reverse=True)[:10]
+
+    text = "🏆 <b>Топ по коинам</b>\n\n"
+    for i, (u_id, data) in enumerate(top_users, 1):
+        try:
+            chat = bot.get_chat(int(u_id))
+            name = chat.first_name or "Без имени"
+        except:
+            name = "Пользователь"
+
+        text += f"{i}. <a href='tg://user?id={u_id}'>{name}</a> — {data['coins']} 🌑\n"
+
+    bot.send_message(
+        m.chat.id,
+        text,
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
+
+
+# ---------------- поиск ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "поиск"))
+def search(m):
+    q = m.text.split(maxsplit=1)
+    if len(q) < 2: return
+    query = urllib.parse.quote(q[1])
+    url = f"https://www.google.com/search?q={query}"
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔎 Открыть Google", url=url))
+    bot.send_message(m.chat.id, f"🔎 Поиск: {q[1]}", reply_markup=kb)
+
+
+# ---------------- реши ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "реши"))
+def solve(m):
+    try:
+        expr = m.text.split(maxsplit=1)[1].replace("^", "**")
+        x = sp.symbols("x")
+        if "=" in expr:
+            left, right = expr.split("=")
+            sol = sp.solve(sp.Eq(sp.sympify(left), sp.sympify(right)))
+            bot.send_message(m.chat.id, f"👩🏼‍🏫 Решение:\n{x}={sol}")
+        else:
+            res = sp.sympify(expr)
+            bot.send_message(m.chat.id, f"👩🏼‍🏫 Ответ:\n{res}")
+    except:
+        bot.send_message(m.chat.id, "❌ Ошибка в примере")
+
+# ---------------- админ ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "выдать"))
+def admin_give(m):
+    if not is_admin(m): return
+    args = m.text.split()
+    if len(args) < 3: bot.send_message(m.chat.id, "Используй: .выдать @user 100"); return
+    try:
+        amount = int(args[2])
+    except:
+        bot.send_message(m.chat.id, "❌ Некорректное число"); return
+    try:
+        user = bot.get_chat(args[1])
+    except:
+        bot.send_message(m.chat.id, "❌ Пользователь не найден"); return
+    u = get(str(user.id))
+    u["coins"] += amount
+    save_all()
+    bot.send_message(m.chat.id, f"✅ Выдано {amount} 🌑 пользователю {user.username}")
+    bot.send_message(user.id, f"📢 Админ выдал вам {amount} 🌑")
+
+
+@bot.message_handler(func=lambda m: is_cmd(m.text, "отобрать"))
+def admin_take(m):
+    if not is_admin(m): return
+    args = m.text.split()
+    if len(args) < 3: bot.send_message(m.chat.id, "Используй: .отобрать @user 100"); return
+    try:
+        amount = int(args[2])
+    except:
+        bot.send_message(m.chat.id, "❌ Некорректное число"); return
+    try:
+        user = bot.get_chat(args[1])
+    except:
+        bot.send_message(m.chat.id, "❌ Пользователь не найден"); return
+    u = get(str(user.id))
+    u["coins"] = max(u["coins"] - amount, 0)
+    save_all()
+    bot.send_message(m.chat.id, f"✅ Отобрано {amount} 🌑 у пользователя {user.username}")
+    bot.send_message(user.id, f"📢 Админ забрал у вас {amount} 🌑")
+
+# ---------------- адвент ----------------
+@bot.message_handler(func=lambda m: is_cmd(m.text, "адвент"))
+def advent_cmd(m):
+    u = get(uid(m))
+    last = max(u["advent"], default=1)
+    page = (last - 1) // ADVENT_PER_PAGE
+
+    kb = build_advent_kb(uid(m), page)
+    bot.send_message(
+        m.chat.id,
+        "🎄 Адвент-календарь\nВыбирай день:",
+        reply_markup=kb
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("advent:"))
+def advent_cb(c):
+    _, day, owner = c.data.split(":")
+    day = int(day)
+    if str(c.from_user.id) != owner:
+        bot.answer_callback_query(c.id, "❌ Эта кнопка не для вас", show_alert=True)
+        return
+    u = get(owner)
+    today = time.localtime().tm_mday
+    if day > today:
+        bot.answer_callback_query(c.id, "⏳ Этот день ещё не наступил", show_alert=True)
+        return
+    if day in u["advent"]:
+        bot.answer_callback_query(c.id, "✅ Вы уже забирали эту награду", show_alert=True)
+        return
+    reward = random.randint(30, 80)
+    u["coins"] += reward
+    u["advent"].append(day)
+    save_all()
+    bot.answer_callback_query(c.id, f"🎁 Вы получили {reward} 🌑", show_alert=True)
+ADVENT_PER_PAGE = 5
+
+def build_advent_kb(user_id, page):
+    u = get(user_id)
+    kb = types.InlineKeyboardMarkup()
+
+    start = page * ADVENT_PER_PAGE + 1
+    end = min(start + ADVENT_PER_PAGE - 1, 31)
+
+    buttons = []
+    for day in range(start, end + 1):
+        if day in u["advent"]:
+            text = f"✅ {day}"
+            cb = f"advent_done:{day}:{user_id}:{page}"
+        else:
+            if day == 31:
+                text = f"👑 {day}"
+            else:
+                text = f"🎁 {day}"
+            cb = f"advent_take:{day}:{user_id}:{page}"
+
+        buttons.append(
+            types.InlineKeyboardButton(text, callback_data=cb)
+        )
+
+    # 🔹 все дни В ОДИН РЯД
+    kb.row(*buttons)
+
+    # 🔹 навигация
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton("⬅️", callback_data=f"advent_page:{page-1}:{user_id}"))
+    if end < 31:
+        nav.append(types.InlineKeyboardButton("➡️", callback_data=f"advent_page:{page+1}:{user_id}"))
+
+    if nav:
+        kb.row(*nav)
+
+    return kb
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("advent_page:"))
+def advent_page_cb(c):
+    _, page, owner = c.data.split(":")
+    if str(c.from_user.id) != owner:
+        bot.answer_callback_query(c.id, "❌ Эта кнопка не для вас", show_alert=True)
+        return
+
+    kb = build_advent_kb(owner, int(page))
+    bot.edit_message_reply_markup(
+        c.message.chat.id,
+        c.message.message_id,
+        reply_markup=kb
+    )
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("advent_take:"))
+def advent_take_cb(c):
+    _, day, owner, page = c.data.split(":")
+    day = int(day)
+    page = int(page)
+
+    if str(c.from_user.id) != owner:
+        bot.answer_callback_query(c.id, "❌ Это не ваша кнопка", show_alert=True)
+        return
+
+    u = get(owner)
+    today = time.localtime().tm_mday
+
+    if day > today:
+        bot.answer_callback_query(c.id, "⏳ Этот день ещё не доступен", show_alert=True)
+        return
+
+    if day in u["advent"]:
+        bot.answer_callback_query(c.id, "✅ Уже получено", show_alert=True)
+        return
+
+    # 🎁 награды
+    if day == 31:
+        coins = random.randint(1000, 2000)
+        text = f"👑 ЛЕГЕНДАРНАЯ НАГРАДА!\n+{coins} 🌑"
+    else:
+        coins = random.randint(120, 220)
+        text = f"🎁 +{coins} 🌑"
+
+    u["coins"] += coins
+    u["advent"].append(day)
+    save(users)
+
+    bot.answer_callback_query(c.id, text, show_alert=True)
+
+    kb = build_advent_kb(owner, page)
+    bot.edit_message_reply_markup(
+        c.message.chat.id,
+        c.message.message_id,
+        reply_markup=kb
+    )
+
+bot.polling(none_stop=True)
